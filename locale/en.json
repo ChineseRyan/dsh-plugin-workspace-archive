@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Archive Workspace",
+    "description": "Adds an \"Archive workspace\" item to each workspace row's \"...\" menu: archives every session in the workspace, hides it from the sidebar, and lets you restore it later."
+  }
+}

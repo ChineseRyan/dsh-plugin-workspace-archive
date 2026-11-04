@@ -1,0 +1,8 @@
+# dsh-plugin-workspace-archive bundle 层。
+# 幂等守卫：同名条目已存在就跳过，避免重复挂载导致路由注册两次、
+# boot 直接报 "duplicate prefix route" 失败。
+- insert:
+    - id: workspace-archive
+      name: 'dsh-plugin-workspace-archive'
+      config: {}
+      disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.name === 'dsh-plugin-workspace-archive')"

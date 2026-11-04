@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+
+# 开发笔记与未完成的宣传图，不随仓库发布
+README.v0.1.1-devnotes.md

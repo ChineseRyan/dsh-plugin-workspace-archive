@@ -1,0 +1,59 @@
+{
+  "name": "dsh-plugin-workspace-archive",
+  "version": "0.1.4",
+  "description": "往工作区行「…」菜单添加「归档工作区」：归档该工作区下全部会话并从侧边栏隐藏，可随时恢复。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "client/client.js",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "workspace",
+    "archive",
+    "sidebar",
+    "client-plugin"
+  ],
+  "license": "MIT",
+  "author": "ChineseRyan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChineseRyan/dsh-plugin-workspace-archive.git"
+  },
+  "homepage": "https://github.com/ChineseRyan/dsh-plugin-workspace-archive#readme",
+  "bugs": {
+    "url": "https://github.com/ChineseRyan/dsh-plugin-workspace-archive/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  }
+}
