@@ -1,0 +1,71 @@
+name: 🐛 缺陷报告
+description: 报告一个可复现的问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请尽量填全下面的信息，缺环境信息的问题往往无法复现。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么
+      description: 实际看到的现象，以及你期望的结果。
+      placeholder: 归档工作区 A 之后，……
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从打开页面开始，一步步写清楚。
+      placeholder: |
+        1. 在侧边栏找一个有 3 个会话的工作区
+        2. 点该行右侧「…」→「归档工作区」
+        3. ……
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: 插件版本
+      description: 在「设置 → 插件」里查看，或来自 Release 标签。
+      placeholder: 0.1.4
+    validations:
+      required: true
+  - type: input
+    id: dsh-version
+    attributes:
+      label: dsh 版本
+      description: 桌面版可在「关于」中查看；Web 版可执行 `dsh --version`。
+      placeholder: 0.2.1-rc.5
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: 运行环境
+      options:
+        - dsh 桌面版（Electron）
+        - dsh Web 版（浏览器）
+        - 其他 / 不确定
+    validations:
+      required: true
+  - type: textarea
+    id: console
+    attributes:
+      label: 控制台报错（可选）
+      description: 按 F12 打开开发者工具，复制 Console 面板里与本插件相关的报错。
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已确认用的是最新版本
+          required: true
+        - label: 我已搜索过现有 Issue，没有重复
+          required: true
