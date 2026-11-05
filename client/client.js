@@ -649,7 +649,14 @@
               const workspaceId = rowKey.slice('workspace:'.length)
               const workspace = wsSnapshot.items.find((w) => w && w.workspaceId === workspaceId)
               let hide = false
-              if (workspace && Array.isArray(workspace.sessionIds) && workspace.sessionIds.length > 0) {
+              // 0.1.5 修复：只要账本里有这个工作区，就必须把行隐藏。
+              // 0.1.4 及以前把判定包在「该工作区至少有一个会话」里，导致本来就空着的
+              // 工作区（本机复现：project）归档后仍留在工作区列表，同时又出现在
+              // 「已归档工作区」面板 —— 两处同时显示。
+              if (archives.has(workspaceId)) {
+                hide = true
+              } else if (workspace && Array.isArray(workspace.sessionIds) && workspace.sessionIds.length > 0) {
+                // 兼容「账本丢了但会话确实都归档了」的情形（换浏览器 / 账本被清）。
                 // 本插件归档过的会话 + 官方当前归档集合，二者任一命中即算已归档。
                 const mine = archivedSessions.get(workspaceId) || null
                 const isArchived = (sid) => archivedNow.has(sid) || (mine !== null && mine.has(sid))
