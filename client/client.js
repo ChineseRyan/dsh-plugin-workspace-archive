@@ -246,8 +246,11 @@
         return f(API + path, Object.assign({ credentials: 'same-origin', cache: 'no-store' }, options || {}))
           .then((r) => r.json().then((j) => ({ ok: r.ok, body: j }), () => ({ ok: false, body: {} })))
       }
-      /* ---------------- 角标偏好（仅本机浏览器 localStorage） ---------------- */
+      /* ---------------- 角标偏好（宿主状态文件为主，localStorage 仅作即时缓存） ---------------- */
       const PREFS_KEY = ID + '.prefs.v1'
+      let prefsSeq = 0
+      let prefsHydrated = false
+      let prefsCached = false
       function prefsStorage() {
         try {
           return win && win.localStorage ? win.localStorage : null
@@ -255,25 +258,56 @@
       }
       function loadPrefs() {
         const s = prefsStorage()
-        if (!s) return
+        if (!s) return false
         try {
           const raw = s.getItem(PREFS_KEY)
-          if (!raw) return
+          if (!raw) return false
           const parsed = JSON.parse(raw)
-          if (!parsed || typeof parsed !== 'object') return
-          if (BADGE_MODES.indexOf(parsed.badgeMode) !== -1) badgeMode = parsed.badgeMode
-          if (typeof parsed.acked === 'boolean') acked = parsed.acked
-        } catch (_) { /* 存储不可用或被禁用时用默认值 */ }
+          if (!parsed || typeof parsed !== 'object') return false
+          let found = false
+          if (BADGE_MODES.indexOf(parsed.badgeMode) !== -1) { badgeMode = parsed.badgeMode; found = true }
+          if (typeof parsed.acked === 'boolean') { acked = parsed.acked; found = true }
+          return found
+        } catch (_) { return false }
       }
       function persistPrefs() {
+        const value = { badgeMode, acked }
         const s = prefsStorage()
-        if (!s) return
-        try { s.setItem(PREFS_KEY, JSON.stringify({ badgeMode, acked })) } catch (_) {}
+        if (s) { try { s.setItem(PREFS_KEY, JSON.stringify(value)) } catch (_) {} }
+        // 0.1.6：宿主状态文件与 archives 共用同一把锁，重启 dsh 后仍能恢复。
+        // 递增序号丢弃过期响应，避免用户连点三档时旧请求后到覆盖新值。
+        const seq = ++prefsSeq
+        fetchJson('/prefs', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(value),
+        }).then(() => {
+          // 只接受最新一次写入的结果；旧请求后到也不做任何事（值早已更新）。
+          if (seq !== prefsSeq) return
+        }).catch(() => { /* 宿主未就绪时保留即时缓存，下次切换会重试 */ })
       }
 
       function loadFromHost() {
         return fetchJson('/state').then(({ ok, body }) => {
           if (!ok || !body || body.ok !== true || !body.archives || typeof body.archives !== 'object') return
+          // 0.1.6：角标偏好以宿主为准。localStorage 按 origin 隔离，dsh 重启换了
+          // 端口/上下文就会读不到；宿主状态文件不会丢。仅当本地缓存没有任何记录时
+          // 才用宿主值覆盖内存，并回填一份缓存（不触发二次 POST）。
+          if (!prefsHydrated && body.prefs && typeof body.prefs === 'object') {
+            prefsHydrated = true
+            // prefsSeq > 0 表示本次会话里用户已经改过档位（POST 可能仍在路上）；
+            // 此时绝不能用这份 /state 快照里的旧值把用户刚选的覆盖掉。
+            if (!prefsCached && prefsSeq === 0) {
+              let applied = false
+              if (BADGE_MODES.indexOf(body.prefs.badgeMode) !== -1) { badgeMode = body.prefs.badgeMode; applied = true }
+              if (typeof body.prefs.acked === 'boolean') { acked = body.prefs.acked; applied = true }
+              if (applied) {
+                const s = prefsStorage()
+                if (s) { try { s.setItem(PREFS_KEY, JSON.stringify({ badgeMode, acked })) } catch (_) {} }
+                notify()
+              }
+            }
+          }
           let changed = false
           for (const [id, rec] of Object.entries(body.archives)) {
             if (typeof id !== 'string' || !id || !rec || typeof rec !== 'object') continue
@@ -569,20 +603,21 @@
         timerSink = (tm) => timers.add(tm)
 
         function arm(target) {
+          // 0.1.6 修复：任何一次点击都先清掉上一次的武装状态。
+          // 旧代码在「点击不在工作区行」时直接 return，armed 会残留 2.5s；
+          // 期间再点输入框右下角的模型列表，官方模型菜单恰好也是 [role=menu]
+          // + 2 个 menuitem，就会被误注入「归档工作区」，看起来像两个界面重合。
+          armed = null
           if (!target || typeof target.closest !== 'function') return
           const row = target.closest(WORKSPACE_ROW_SELECTOR)
           if (!row || typeof row.getAttribute !== 'function') return
           const key = row.getAttribute('data-row-key')
           if (typeof key !== 'string' || !key.startsWith('workspace:')) return
           // 点击必须落在工作区行内的按钮上才武装（该行只有 ⋯ 与「新建会话」，
-          // 后者不打开菜单，无害）；任何其它点击都清掉 armed，
-          // 避免上一次残留串到随后打开的会话/视图选项菜单。
-          // 完全不依赖 aria-label 文案，因此任意 locale 都成立。
+          // 后者不打开菜单，无害）；完全不依赖 aria-label 文案，任意 locale 都成立。
           const trigger = target.closest('button')
           if (trigger && row.contains(trigger)) {
             armed = { workspaceId: key.slice('workspace:'.length), rowKey: key, until: Date.now() + ARM_TTL_MS }
-          } else {
-            armed = null
           }
         }
         function onCapture(event) {
@@ -618,6 +653,12 @@
             ? menu.querySelectorAll(MENU_ITEM_SELECTOR) : []
           const count = items.length || (Array.isArray(items) ? items.length : 0)
           if (count !== 2) return false
+          // 0.1.6 兜底：官方「模型与推理等级」菜单 root pane 恰好也是 2 个
+          // menuitem，单靠数量会误命中。模型菜单是 position:fixed 的 MenuSurface，
+          // id 固定为 `${id}-menu`；官方工作区行菜单没有 id。只排除这一项，
+          // 不额外要求 viewport 容器（官方菜单未必有，误加会连正常注入一起挡掉）。
+          const menuId = typeof menu.id === 'string' ? menu.id : ''
+          if (/-menu$/.test(menuId)) return false
           return true
         }
         /**
@@ -832,7 +873,7 @@
           } catch (_) {}
         } catch (_) { /* locale 缺失时退回内置字典 */ }
 
-        loadPrefs()
+        prefsCached = loadPrefs()
         ctx.effect(() => installStyles(doc), ID + ': styles')
         ctx.effect(() => installProjection(ctx), ID + ': projection')
         ctx.effect(() => installDomBridge(doc, t), ID + ': menus')

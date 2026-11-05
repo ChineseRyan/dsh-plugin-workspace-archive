@@ -46,7 +46,8 @@ dsh plugin --profile <profile> remove dsh-plugin-workspace-archive
   面板即视为已确认，气泡消失，直到你再次归档新的工作区。
 - **永不显示**：角标始终隐藏，入口按钮仍在。
 
-面板可直接按 `Esc` 或底栏「关闭」关闭。角标偏好只保存在本机浏览器（`localStorage`），不同步到宿主。
+面板可直接按 `Esc` 或底栏「关闭」关闭。**0.1.6 起角标偏好保存在宿主状态文件**（与归档账本同一份文件），
+重启 dsh 后不会回到默认的「常驻显示」；本机浏览器 `localStorage` 只作即时缓存。
 
 **归档时发生了什么？**
 
@@ -65,7 +66,7 @@ dsh plugin --profile <profile> remove dsh-plugin-workspace-archive
 ## 数据与隐私
 
 - 插件只在本地一个位置写入数据：
-  `$DSH_HOME/storages/dsh-workspace-archive.json`
+  `$DSH_HOME/storages/dsh-workspace-archive.json`（归档账本 + 角标偏好）
 - 写入采用「原子 rename + 跨进程文件锁」，多窗口并发不会丢失记录；
 - 不联网、不上传、不收集任何信息；不读取会话内容，只记录 ID 名单。
 
@@ -104,7 +105,7 @@ dsh plugin --profile <profile> remove dsh-plugin-workspace-archive
 ```
 package.json           dsh.bundle / dsh.client / exports / locale / icon
 cordis.patch.yml       bundle 层（含幂等守卫，重复挂载不会注册两次路由）
-lib/index.js           宿主半侧：状态文件 + /dsh-workspace-archive/{ping,state,archive,unarchive}
+lib/index.js           宿主半侧：状态文件 + /dsh-workspace-archive/{ping,state,archive,unarchive,prefs}
 client/client.js       浏览器半侧：「…」菜单注入 + 已归档面板
 locale/{zh,en}.json    插件元数据文案
 icon.svg               图标

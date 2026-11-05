@@ -16,6 +16,7 @@ const {
   assertWorkspaceId, assertSessionIds, isId,
   statePath, MAX_STATE_FILE_BYTES, LOCK_STALE_MS,
   MAX_SESSION_IDS_PER_RECORD, MAX_ID_LENGTH,
+  normalizePrefs, BADGE_MODES,
 } = __test
 
 const TMP_ROOT = await mkdtemp(join(tmpdir(), 'dsh-wsa-test-'))
@@ -320,3 +321,43 @@ test('4d statePath：跟随 DSH_HOME，未设置时落在 ~/.dsh/storages', asyn
     else process.env.DSH_HOME = saved
   }
 })
+
+
+/* ========================= ⑤ 角标偏好（0.1.6） ========================= */
+test('5a normalizePrefs：白名单档位 + 布尔确认标记，其余回落默认', () => {
+  assert.deepEqual(normalizePrefs(undefined), { badgeMode: 'always', acked: true })
+  assert.deepEqual(normalizePrefs(null), { badgeMode: 'always', acked: true })
+  assert.deepEqual(normalizePrefs([]), { badgeMode: 'always', acked: true })
+  assert.deepEqual(normalizePrefs({}), { badgeMode: 'always', acked: true })
+  for (const mode of BADGE_MODES) {
+    assert.deepEqual(normalizePrefs({ badgeMode: mode, acked: false }), { badgeMode: mode, acked: false })
+  }
+  assert.deepEqual(normalizePrefs({ badgeMode: 'bogus', acked: false }), { badgeMode: 'always', acked: false })
+  assert.deepEqual(normalizePrefs({ badgeMode: 'new', acked: 'yes' }), { badgeMode: 'new', acked: true })
+  // 不许把原型链上的脏键带进偏好对象
+  const dirty = Object.create({ badgeMode: 'never', acked: false })
+  assert.deepEqual(normalizePrefs(dirty), { badgeMode: 'always', acked: true })
+})
+
+test('5b readState：旧版状态文件（无 prefs 字段）平滑升级，archives 不丢', async () => {
+  const dir = await freshDir('state-no-prefs')
+  const target = join(dir, 'state.json')
+  await writeFile(target, JSON.stringify({ version: 1, archives: { w1: { archivedAt: 1, sessionIds: ['s1'] } } }), 'utf8')
+  const state = await readState(target)
+  assert.deepEqual(state.prefs, { badgeMode: 'always', acked: true }, '缺 prefs 时回落默认')
+  assert.deepEqual(state.archives['w1'].sessionIds, ['s1'], '旧账本照常读出')
+})
+
+test('5c createStore：setPrefs 与 archive 共用同一状态文件、互不覆盖', async () => {
+  const dir = await freshDir('store-prefs')
+  const target = join(dir, 'state.json')
+  const store = createStore(target)
+  await store.setPrefs({ badgeMode: 'never', acked: false })
+  await store.archive('ws-1', ['s1'])
+  assert.deepEqual(await store.getPrefs(), { badgeMode: 'never', acked: false })
+  assert.deepEqual(Object.keys(await store.list()), ['ws-1'])
+  const state = await readState(target)
+  assert.deepEqual(state.prefs, { badgeMode: 'never', acked: false })
+  assert.deepEqual(state.archives['ws-1'].sessionIds, ['s1'])
+})
+

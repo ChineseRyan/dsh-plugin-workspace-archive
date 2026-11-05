@@ -125,7 +125,7 @@ test('5a 路由：apply 以 prefix 注册 /dsh-workspace-archive，卸载时可�
   assert.equal(meta.registrations.length, 0, '卸载后路由必须被摘除')
 })
 
-test('5b GET /state：返回 {ok:true, archives}，JSON 头齐全', async () => {
+test('5b GET /state：返回 {ok:true, archives, prefs}，JSON 头齐全', async () => {
   const home = await useFreshHome('route-state')
   const { ctx, meta } = makeCtx()
   apply(ctx)
@@ -134,7 +134,7 @@ test('5b GET /state：返回 {ok:true, archives}，JSON 头齐全', async () => 
   assert.equal(r.headers['content-type'], 'application/json; charset=utf-8')
   assert.equal(r.headers['cache-control'], 'no-store')
   assert.equal(r.headers['content-length'], Buffer.byteLength(r.raw))
-  assert.deepEqual(r.json, { ok: true, archives: {} })
+  assert.deepEqual(r.json, { ok: true, archives: {}, prefs: { badgeMode: 'always', acked: true } })
 })
 
 test('5c POST /archive：返回 {ok:true, record} 并真正落盘；重复归档合并会话', async () => {
@@ -278,3 +278,63 @@ test('5i GET /state：状态文件损坏 → 500 {ok:false}（不吞错、不回
   assert.equal(write.status, 500)
   assert.equal(write.json.ok, false)
 })
+
+
+/* ========================= ⑥ 角标偏好持久化（0.1.6） ========================= */
+test('6a POST /prefs：写入宿主状态文件，GET /state 能读回（重启后可恢复）', async () => {
+  const home = await useFreshHome('route-prefs')
+  const { ctx, meta } = makeCtx()
+  apply(ctx)
+
+  const empty = await call(meta, 'GET', '/state')
+  assert.deepEqual(empty.json.prefs, { badgeMode: 'always', acked: true }, '缺省偏好')
+
+  const write = await call(meta, 'POST', '/prefs', { badgeMode: 'never', acked: false })
+  assert.equal(write.status, 200)
+  assert.deepEqual(write.json, { ok: true, prefs: { badgeMode: 'never', acked: false } })
+
+  const state = JSON.parse(await readFile(join(home, 'storages', 'dsh-workspace-archive.json'), 'utf8'))
+  assert.deepEqual(state.prefs, { badgeMode: 'never', acked: false }, '偏好必须真的落盘')
+
+  // 模拟「重启宿主」：对同一份 $DSH_HOME 新建一个 apply，读到的偏好不丢。
+  const { ctx: ctx2, meta: meta2 } = makeCtx()
+  apply(ctx2)
+  const after = await call(meta2, 'GET', '/state')
+  assert.deepEqual(after.json.prefs, { badgeMode: 'never', acked: false }, '重启后偏好必须保留')
+})
+
+test('6b /prefs 校验：非法档位回落默认，坏 acked 回落默认，非对象 400', async () => {
+  const home = await useFreshHome('route-prefs-bad')
+  const { ctx, meta } = makeCtx()
+  apply(ctx)
+
+  const cases = [
+    { body: { badgeMode: 'bogus', acked: true }, expect: { badgeMode: 'always', acked: true } },
+    { body: { badgeMode: 'new', acked: 'yes' }, expect: { badgeMode: 'new', acked: true } },
+    { body: {}, expect: { badgeMode: 'always', acked: true } },
+  ]
+  for (const c of cases) {
+    const r = await call(meta, 'POST', '/prefs', c.body)
+    assert.equal(r.status, 200)
+    assert.deepEqual(r.json.prefs, c.expect, JSON.stringify(c.body))
+  }
+  const notObject = await call(meta, 'POST', '/prefs', '[1,2]')
+  assert.equal(notObject.status, 400)
+  assert.equal(notObject.json.error, '请求体必须是对象')
+
+  // 偏好写入不得污染归档账本
+  const after = await call(meta, 'GET', '/state')
+  assert.deepEqual(after.json.archives, {})
+})
+
+test('6c /prefs 与 /archive 共存：改偏好不删账本，改账本不丢偏好', async () => {
+  const home = await useFreshHome('route-prefs-coexist')
+  const { ctx, meta } = makeCtx()
+  apply(ctx)
+  await call(meta, 'POST', '/archive', { workspaceId: 'ws-1', sessionIds: ['s1'] })
+  await call(meta, 'POST', '/prefs', { badgeMode: 'new', acked: false })
+  const r = await call(meta, 'GET', '/state')
+  assert.deepEqual(r.json.archives['ws-1'].sessionIds, ['s1'])
+  assert.deepEqual(r.json.prefs, { badgeMode: 'new', acked: false })
+})
+

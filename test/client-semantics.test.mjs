@@ -27,12 +27,12 @@ function countOf(needle) {
 }
 
 /* ======================= 与源码逐字一致的两段判定式 ======================= */
-/** client.js:373 —— 运行中判定（/running|active|busy/i 命中异常消息 → reason:'running'）。 */
+/** client.js:404 —— 运行中判定（/running|active|busy/i 命中异常消息 → reason:'running'）。 */
 function archiveFailureReason(message) {
   const msg = message === undefined || message === null ? '' : String(message)
   return /running|active|busy/i.test(msg) ? 'running' : 'failed'
 }
-/** client.js:549 —— 失败时菜单标签文案。 */
+/** client.js:580 —— 失败时菜单标签文案。 */
 function menuLabelOnFailure(result) {
   return result.reason === 'running' ? 'menu.running' : 'menu.archiveFailed'
 }
@@ -91,8 +91,8 @@ test('6e 角标：没有归档记录时三档都不显示', () => {
 
 test('6f 角标：新归档置 acked=false 并持久化；打开面板或切到 new 置 acked=true', () => {
   // 归档成功后：acked = false + persistPrefs()
-  assert.match(line(429), /acked = false/)
-  assert.match(line(430), /persistPrefs\(\)/)
+  assert.match(line(463), /acked = false/)
+  assert.match(line(464), /persistPrefs\(\)/)
   // 打开面板即确认当前这批（client.js:212-215）
   const panelBlock = lines.slice(208, 217).join('\n')
   assert.ok(panelBlock.indexOf('if (v && badgeMode === ') > -1, '开口面板的分支')
@@ -104,7 +104,7 @@ test('6f 角标：新归档置 acked=false 并持久化；打开面板或切到 
 })
 
 test('6g 角标 DOM：气泡带 data-new 标记，new 档额外挂脉冲 class', () => {
-  const dom = lines.slice(750, 757).join('\n')
+  const dom = lines.slice(784, 791).join('\n')
   assert.ok(src.indexOf("className: NS + '-badge' + (badge.isNew ? ' ' + NS + '-badge-new' : '')") > -1, '气泡类名')
   assert.ok(src.indexOf("'data-new': badge.isNew ? 'true' : undefined") > -1, 'data-new 标记')
   assert.ok(src.indexOf('footer.ariaNew') > -1, '有新归档时 aria-label 走 ariaNew')
@@ -114,19 +114,19 @@ test('6g 角标 DOM：气泡带 data-new 标记，new 档额外挂脉冲 class',
 /* ========================= ⑦ 归档回滚 ========================= */
 test("7a 归档回滚：任一条失败 → 已成功的全部 unarchive 回滚（源码结构）", () => {
   // 回滚函数只对 done 里的每一条调用 unarchive，且吞掉单条失败
-  const rollbackBlock = lines.slice(377, 380).join('\n')
+  const rollbackBlock = lines.slice(411, 414).join('\n')
   assert.ok(rollbackBlock.indexOf('const rollback = async () => {') > -1, '有 rollback 闭包')
   assert.ok(rollbackBlock.indexOf('for (const prev of done) { try { await doUnarchive(prev) } catch (_) {} }') > -1,
     '回滚 = 对 done 逐个 unarchive')
   // 失败分支先 rollback 再返回
-  const catchBlock = lines.slice(389, 394).join('\n')
+  const catchBlock = lines.slice(423, 428).join('\n')
   assert.ok(catchBlock.indexOf('await rollback()') > -1, '单条归档失败必须先回滚')
   assert.ok(catchBlock.indexOf("reason: /running|active|busy/i.test(msg) ? 'running' : 'failed'") > -1)
   // 归档期间新增会话那一轮失败也要回滚
-  const afterBlock = lines.slice(404, 411).join('\n')
+  const afterBlock = lines.slice(438, 445).join('\n')
   assert.ok(afterBlock.indexOf('await rollback()') > -1, '补归档失败同样回滚')
   // 落账本失败也要回滚（账本写失败时会话能整体回滚）
-  const persistBlock = lines.slice(419, 425).join('\n')
+  const persistBlock = lines.slice(453, 459).join('\n')
   assert.ok(persistBlock.indexOf('await rollback()') > -1, '账本写失败必须回滚')
   assert.ok(persistBlock.indexOf("return { ok: false, reason: 'persist-failed' }") > -1)
   // 整个归档流程必须恰有 4 处 rollback 调用（3 个失败分支 + 定义）
@@ -193,7 +193,7 @@ test('7c 归档回滚：复算「账本写失败」→ 所有已归档成员全�
 
 /* ========================= ⑧ 恢复语义 ========================= */
 test('8a 恢复语义：全部成功才删记录，否则整组回滚并保留（源码结构）', () => {
-  const block = lines.slice(438, 472)
+  const block = lines.slice(472, 506)
   const text = block.join('\n')
   assert.ok(text.indexOf('const restored = []') > -1, '维护已恢复列表')
   // 成功路径：先落账本，再删内存记录
@@ -274,11 +274,11 @@ test('9a 运行中拒绝：官方命令一律传 stopActivity:false（源码里�
   const stopActivityFalse = src.split("stopActivity: false").length - 1
   assert.equal(stopActivityFalse, 4, '应恰有 4 处 stopActivity: false')
   // 归档两处（首轮 + 补归档）
-  assert.ok(line(388).indexOf('await doArchive(sid, { stopActivity: false })') > -1, '首轮归档')
-  assert.ok(line(405).indexOf('await doArchive(sid, { stopActivity: false })') > -1, '补归档')
+  assert.ok(line(422).indexOf('await doArchive(sid, { stopActivity: false })') > -1, '首轮归档')
+  assert.ok(line(439).indexOf('await doArchive(sid, { stopActivity: false })') > -1, '补归档')
   // 回滚/恢复时重新归档两处
   const rejoins = lines.map((t, i) => [i + 1, t]).filter(([, t]) => t.indexOf('await doArchive(prev, { stopActivity: false })') > -1)
-  assert.deepEqual(rejoins.map(([n]) => n), [453, 460], '恢复/回滚重新归档的行号')
+  assert.deepEqual(rejoins.map(([n]) => n), [487, 494], '恢复/回滚重新归档的行号')
   // 一个 stopActivity:true 都不许有
   assert.equal(countOf('stopActivity: true'), 0, '绝不能停止会话')
 })
@@ -299,17 +299,17 @@ test('9b 运行中拒绝：源码里没有任何停止/中断会话的调用', (
     assert.equal(countOf(needle), 0, '不应出现：' + needle)
   }
   // 只有注释里提到"停"，代码里没有
-  assert.match(line(387), /绝不替用户停掉正在跑的会话/)
+  assert.match(line(421), /绝不替用户停掉正在跑的会话/)
 })
 
 test("9c 运行中拒绝：reason:'running' 只改菜单文案 + 2.6s 自动复位，不做别的", () => {
   // executeArchive 的失败判定（client.js:393）
-  assert.match(line(393), /reason: \/running\|active\|busy\/i\.test\(msg\) \? 'running' : 'failed'/)
+  assert.match(line(427), /reason: \/running\|active\|busy\/i\.test\(msg\) \? 'running' : 'failed'/)
   // 失败后只改文案并安排复位（client.js:549-552）
-  assert.match(line(549), /label\.textContent = result\.reason === 'running' \? t\('menu\.running'\) : t\('menu\.archiveFailed'\)/)
-  assert.match(line(551), /parts\.resetTimer = setTimeout\(parts\.reset, 2600\)/)
+  assert.match(line(583), /label\.textContent = result\.reason === 'running' \? t\('menu\.running'\) : t\('menu\.archiveFailed'\)/)
+  assert.match(line(585), /parts\.resetTimer = setTimeout\(parts\.reset, 2600\)/)
   // 点击处理器里，失败分支之前只有 executeArchive，没有别的会话操作
-  const clickBlock = lines.slice(538, 556).join('\n')
+  const clickBlock = lines.slice(572, 590).join('\n')
   assert.ok(clickBlock.indexOf('executeArchive(workspaceId).then((result) => {') > -1)
   assert.equal((clickBlock.match(/stopActivity|interrupt|abort|kill/gi) || []).length, 0, '点击处理器里不得有停止调用')
   // 词条本身：用户看到的是"请先停止"，插件不代劳
@@ -329,3 +329,38 @@ test('9d 运行中拒绝：复算异常消息 → reason 判定（只影响提�
   // 归档成功时也不停会话：4 处 doArchive 全是 stopActivity:false（见 9a）
   assert.equal(countOf('stopActivity'), 4)
 })
+
+
+/* ========================= ⑩ 0.1.6 两个 bug 的回归 ========================= */
+test('10a 重启不丢角标：偏好写入宿主 /prefs + localStorage 双写', () => {
+  // persistPrefs 必须同时写本机缓存与宿主状态文件；后者才是重启后的依据。
+  assert.ok(src.indexOf("const PREFS_KEY = ID + '.prefs.v1'") > -1, 'localStorage 键名保留（即时缓存）')
+  assert.ok(src.indexOf("s.setItem(PREFS_KEY, JSON.stringify(value))") > -1, '写本机缓存')
+  assert.ok(src.indexOf("fetchJson('/prefs', {") > -1, '写宿主状态文件')
+  assert.ok(src.indexOf("method: 'POST'") > -1, '宿主写入用 POST')
+  // loadFromHost 从 /state 的 prefs 恢复，且只在本地无缓存时覆盖
+  assert.ok(src.indexOf('if (!prefsHydrated && body.prefs') > -1, '从宿主恢复偏好')
+  assert.ok(src.indexOf('if (!prefsCached && prefsSeq === 0)') > -1,
+    '本地无缓存且本次会话未改过档位时才由宿主恢复（防 /state 慢响应覆盖刚选的值）')
+  assert.match(src, /const seq = \+\+prefsSeq/, '连点三档时用递增序号防乱序覆盖')
+})
+
+test('10b 模型列表不重合：任何点击先清 armed + 收紧菜单判定', () => {
+  // 旧代码在「点击不在工作区行」时直接 return，armed 残留 2.5s，
+  // 随后点模型列表（恰好 2 个 menuitem 的 [role=menu]）会被误注入。
+  const armStart = src.indexOf('function arm(target) {')
+  const armEnd = src.indexOf('function onCapture(event) {', armStart)
+  const armBody = src.slice(armStart, armEnd)
+  assert.ok(armBody.indexOf('armed = null') > -1, 'arm() 开头必须无条件清 armed')
+  assert.ok(armBody.indexOf('armed = null') < armBody.indexOf('if (!target'), '清 armed 必须在任何 return 之前')
+
+  // isWorkspaceMenu 现在不只靠「恰好 2 项」：还排除模型菜单的 xxx-menu id。
+  const menuStart = src.indexOf('function isWorkspaceMenu(menu) {')
+  const menuEnd = src.indexOf('}', src.indexOf('return true', menuStart)) + 1
+  const menuBody = src.slice(menuStart, menuEnd)
+  assert.ok(menuBody.indexOf('count !== 2') > -1, '保留原有的 2 项判定')
+  assert.ok(menuBody.indexOf('/-menu$/') > -1, '排除模型选择器的 xxx-menu id')
+  assert.equal(menuBody.indexOf('MENU_VIEWPORT_SELECTOR'), -1,
+    '不得用 viewport 容器做正向判定：官方工作区菜单未必有，会把正常注入一起挡掉')
+})
+
