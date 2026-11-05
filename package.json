@@ -12,6 +12,9 @@
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
   "files": [
     "lib/index.js",
     "client/client.js",
