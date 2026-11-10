@@ -105,7 +105,7 @@
    * 令牌名取自本机 0.2.1-rc.2 的 121 个 --dsw-alias-* 定义。
    */
   const CSS = `
-[data-dsh-wsa-hidden]{display:none!important}
+[data-dsh-wsa-hidden]{display:none!important}/* 0.1.7 Linux 布局修复：官方 .hHd-Xa_footerActions 本为 flex row，但 dsh-qoder-connect 会全局注入 [class*="_footArea"] [class*="_footerActions"]{flex-direction:column}，把 Remote 与本插件归档图标拆成两行（本按钮 align-self:center 在 column 下正好水平居中，与图1吻合）。下列规则仅当 footer 内存在本插件按钮时才把容器恢复为官方默认的 flex-direction:row：Windows 官方本就是 row，同值覆盖=计算值与视觉均零变化；不支持 :has() 的旧浏览器整条忽略，同样零变化。两条互补：无 qoder 全宽卡片时直接同行；有 .qdp-foot 时额外开 wrap，让 100% 宽卡片仍独占一行、Remote 与图标在下一行同行，不破坏 qoder 布局。 */[class*="_footArea"] [class*="_footerActions"]:has([class*="dsh-plugin-workspace-archive-footer"]):not(:has(.qdp-foot)){flex-direction:row}[class*="_footArea"] [class*="_footerActions"]:has([class*="dsh-plugin-workspace-archive-footer"]):has(.qdp-foot){flex-direction:row;flex-wrap:wrap}
 .${NS}-menu-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;flex:0 0 16px}
 .${NS}-menu-label{flex:1 1 auto;min-width:0}
 .${NS}-footer{position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:28px;height:28px;min-width:28px;padding:0;margin:0;align-self:center;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:1;cursor:pointer}
