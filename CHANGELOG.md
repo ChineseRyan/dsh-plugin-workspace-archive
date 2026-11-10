@@ -1,5 +1,24 @@
 # 变更记录
 
+## 0.1.7
+
+### 修复
+
+- **Linux 上「归档工作区」图标与 Remote 不在同一行**：Linux profile 装载的
+  `dsh-qoder-connect` 会无条件注入
+  `[class*="_footArea"] [class*="_footerActions"]{flex-direction:column}`，
+  把官方 sidebar footer 容器（本为 flex row）改成纵向排列，导致 Remote 与本插件
+  图标被拆成两行，且图标因 `align-self:center` 水平居中。
+  现在仅在 footer 内存在本插件按钮时把容器恢复为官方默认 `flex-direction:row`；
+  若容器内存在 qoder 的 `.qdp-foot` 全宽卡片，则同时允许换行，让卡片独占一行、
+  Remote 与图标在下一行同行，不破坏 qoder 布局。
+
+### 兼容性
+
+- 仅浏览器半侧（`client/client.js`）样式改动，宿主半侧无改动，刷新页面即生效。
+- Windows 未安装 `dsh-qoder-connect`，容器本就是 row，该规则为同值覆盖，布局不变。
+- 依赖 `:has()`；不支持的旧浏览器会整条忽略规则，退回原布局。
+
 ## 0.1.6
 
 ### 修复
