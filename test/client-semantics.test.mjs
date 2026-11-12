@@ -46,11 +46,15 @@ function badgeView(state) {
 
 /* ========================= ⑥ 角标三档 ========================= */
 test('6a 角标：三档 always / new / never 常量，默认 always', () => {
-  assert.match(line(173), /const BADGE_MODES = \['always', 'new', 'never'\]/)
-  assert.match(line(174), /let badgeMode = 'always'/, '默认档位必须是 always')
-  assert.match(line(179), /let acked = true/, '新归档的确认标记默认已确认')
+  // 0.1.7 起在共享状态前插入了 fetchCleanup/cleanupNote 两个纯函数，行号整体下移。
+  // 断言改为按内容定位，避免每次改动都跟着挪行号。
+  assert.match(src, /const BADGE_MODES = \['always', 'new', 'never'\]/)
+  assert.match(src, /let badgeMode = 'always'/, '默认档位必须是 always')
+  assert.match(src, /let acked = true/, '新归档的确认标记默认已确认')
   // 源码里的 badgeView 与本文件复算的判定式必须逐字一致
-  const body = lines.slice(202, 208).join('\n')
+  const badgeStart = lines.findIndex((t) => t.indexOf('function badgeView(state) {') > -1)
+  assert.ok(badgeStart > -1, '必须能找到 badgeView')
+  const body = lines.slice(badgeStart + 1, badgeStart + 7).join('\n')
   assert.ok(body.indexOf("if (state.badgeMode === 'never' || count === 0) return null") > -1)
   assert.ok(body.indexOf("if (state.badgeMode === 'always') return { count, isNew: false }") > -1)
   assert.ok(body.indexOf('return state.acked ? null : { count, isNew: true }') > -1)
@@ -91,16 +95,18 @@ test('6e 角标：没有归档记录时三档都不显示', () => {
 
 test('6f 角标：新归档置 acked=false 并持久化；打开面板或切到 new 置 acked=true', () => {
   // 归档成功后：acked = false + persistPrefs()
-  assert.match(line(463), /acked = false/)
-  assert.match(line(464), /persistPrefs\(\)/)
-  // 打开面板即确认当前这批（client.js:212-215）
-  const panelBlock = lines.slice(208, 217).join('\n')
+  assert.match(src, /acked = false/)
+  assert.ok(src.indexOf('persistPrefs()') > -1)
+  // 打开面板即确认当前这批
+  const panelStart = lines.findIndex((t) => t.indexOf('function setPanelOpen(v)') > -1)
+  assert.ok(panelStart > -1, '必须能找到 setPanelOpen')
+  const panelBlock = lines.slice(panelStart, panelStart + 9).join('\n')
   assert.ok(panelBlock.indexOf('if (v && badgeMode === ') > -1, '开口面板的分支')
   assert.ok(panelBlock.indexOf('acked = true') > -1, '打开面板应确认')
   // 切到 new 档时视作已确认，避免刚切换就冒泡（client.js:218-225）
-  assert.match(line(222), /if \(mode === 'new'\) acked = true/)
+  assert.match(src, /if \(mode === 'new'\) acked = true/)
   // 偏好落 localStorage，键名固定
-  assert.match(line(250), /const PREFS_KEY = ID \+ '\.prefs\.v1'/)
+  assert.match(src, /const PREFS_KEY = ID \+ '\.prefs\.v1'/)
 })
 
 test('6g 角标 DOM：气泡带 data-new 标记，new 档额外挂脉冲 class', () => {
@@ -114,21 +120,23 @@ test('6g 角标 DOM：气泡带 data-new 标记，new 档额外挂脉冲 class',
 /* ========================= ⑦ 归档回滚 ========================= */
 test("7a 归档回滚：任一条失败 → 已成功的全部 unarchive 回滚（源码结构）", () => {
   // 回滚函数只对 done 里的每一条调用 unarchive，且吞掉单条失败
-  const rollbackBlock = lines.slice(411, 414).join('\n')
-  assert.ok(rollbackBlock.indexOf('const rollback = async () => {') > -1, '有 rollback 闭包')
+  const rollbackStart = lines.findIndex((t) => t.indexOf('const rollback = async () => {') > -1)
+  assert.ok(rollbackStart > -1, '有 rollback 闭包')
+  const rollbackBlock = lines.slice(rollbackStart, rollbackStart + 4).join('\n')
   assert.ok(rollbackBlock.indexOf('for (const prev of done) { try { await doUnarchive(prev) } catch (_) {} }') > -1,
     '回滚 = 对 done 逐个 unarchive')
-  // 失败分支先 rollback 再返回
-  const catchBlock = lines.slice(423, 428).join('\n')
+  // 失败分支先 rollback 再返回（source: reason 判定紧跟在 rollback 之后）
+  const reasonAt = lines.findIndex((t) => t.indexOf("reason: /running|active|busy/i.test(msg) ? 'running' : 'failed'") > -1)
+  assert.ok(reasonAt > -1, '必须能找到失败判定')
+  const catchBlock = lines.slice(Math.max(0, reasonAt - 6), reasonAt + 2).join('\n')
   assert.ok(catchBlock.indexOf('await rollback()') > -1, '单条归档失败必须先回滚')
-  assert.ok(catchBlock.indexOf("reason: /running|active|busy/i.test(msg) ? 'running' : 'failed'") > -1)
   // 归档期间新增会话那一轮失败也要回滚
-  const afterBlock = lines.slice(438, 445).join('\n')
-  assert.ok(afterBlock.indexOf('await rollback()') > -1, '补归档失败同样回滚')
+  assert.equal((src.match(/await rollback\(\)/g) || []).length, 3, '三个失败分支都要回滚：首轮、补归档、账本落盘')
   // 落账本失败也要回滚（账本写失败时会话能整体回滚）
-  const persistBlock = lines.slice(453, 459).join('\n')
+  const persistAt = lines.findIndex((t) => t.indexOf("return { ok: false, reason: 'persist-failed' }") > -1)
+  assert.ok(persistAt > -1, '必须能找到账本落盘失败分支')
+  const persistBlock = lines.slice(Math.max(0, persistAt - 6), persistAt + 1).join('\n')
   assert.ok(persistBlock.indexOf('await rollback()') > -1, '账本写失败必须回滚')
-  assert.ok(persistBlock.indexOf("return { ok: false, reason: 'persist-failed' }") > -1)
   // 整个归档流程必须恰有 4 处 rollback 调用（3 个失败分支 + 定义）
   assert.equal(countOf('await rollback()'), 3, 'rollback 调用点数量')
 })
@@ -193,7 +201,9 @@ test('7c 归档回滚：复算「账本写失败」→ 所有已归档成员全�
 
 /* ========================= ⑧ 恢复语义 ========================= */
 test('8a 恢复语义：全部成功才删记录，否则整组回滚并保留（源码结构）', () => {
-  const block = lines.slice(472, 506)
+  const restoreStart = lines.findIndex((t) => t.indexOf('async function executeUnarchive(workspaceId)') > -1)
+  assert.ok(restoreStart > -1, '必须能找到 executeUnarchive')
+  const block = lines.slice(restoreStart, restoreStart + 34)
   const text = block.join('\n')
   assert.ok(text.indexOf('const restored = []') > -1, '维护已恢复列表')
   // 成功路径：先落账本，再删内存记录
@@ -274,11 +284,11 @@ test('9a 运行中拒绝：官方命令一律传 stopActivity:false（源码里�
   const stopActivityFalse = src.split("stopActivity: false").length - 1
   assert.equal(stopActivityFalse, 4, '应恰有 4 处 stopActivity: false')
   // 归档两处（首轮 + 补归档）
-  assert.ok(line(422).indexOf('await doArchive(sid, { stopActivity: false })') > -1, '首轮归档')
-  assert.ok(line(439).indexOf('await doArchive(sid, { stopActivity: false })') > -1, '补归档')
+  const firstPass = lines.filter((t) => t.indexOf('await doArchive(sid, { stopActivity: false })') > -1)
+  assert.equal(firstPass.length, 2, '首轮归档 + 补归档各一处')
   // 回滚/恢复时重新归档两处
-  const rejoins = lines.map((t, i) => [i + 1, t]).filter(([, t]) => t.indexOf('await doArchive(prev, { stopActivity: false })') > -1)
-  assert.deepEqual(rejoins.map(([n]) => n), [487, 494], '恢复/回滚重新归档的行号')
+  const rejoins = lines.filter((t) => t.indexOf('await doArchive(prev, { stopActivity: false })') > -1)
+  assert.equal(rejoins.length, 2, '恢复/回滚各重新归档一次')
   // 一个 stopActivity:true 都不许有
   assert.equal(countOf('stopActivity: true'), 0, '绝不能停止会话')
 })
@@ -299,21 +309,23 @@ test('9b 运行中拒绝：源码里没有任何停止/中断会话的调用', (
     assert.equal(countOf(needle), 0, '不应出现：' + needle)
   }
   // 只有注释里提到"停"，代码里没有
-  assert.match(line(421), /绝不替用户停掉正在跑的会话/)
+  assert.ok(src.indexOf('绝不替用户停掉正在跑的会话') > -1)
 })
 
 test("9c 运行中拒绝：reason:'running' 只改菜单文案 + 2.6s 自动复位，不做别的", () => {
-  // executeArchive 的失败判定（client.js:393）
-  assert.match(line(427), /reason: \/running\|active\|busy\/i\.test\(msg\) \? 'running' : 'failed'/)
-  // 失败后只改文案并安排复位（client.js:549-552）
-  assert.match(line(583), /label\.textContent = result\.reason === 'running' \? t\('menu\.running'\) : t\('menu\.archiveFailed'\)/)
-  assert.match(line(585), /parts\.resetTimer = setTimeout\(parts\.reset, 2600\)/)
+  // executeArchive 的失败判定
+  assert.match(src, /reason: \/running\|active\|busy\/i\.test\(msg\) \? 'running' : 'failed'/)
+  // 失败后只改文案并安排复位
+  assert.match(src, /label\.textContent = result\.reason === 'running' \? t\('menu\.running'\) : t\('menu\.archiveFailed'\)/)
+  assert.match(src, /parts\.resetTimer = setTimeout\(parts\.reset, 2600\)/)
   // 点击处理器里，失败分支之前只有 executeArchive，没有别的会话操作
-  const clickBlock = lines.slice(572, 590).join('\n')
+  const clickStart = lines.findIndex((t) => t.indexOf('executeArchive(workspaceId).then((result) => {') > -1)
+  assert.ok(clickStart > -1)
+  const clickBlock = lines.slice(clickStart, clickStart + 18).join('\n')
   assert.ok(clickBlock.indexOf('executeArchive(workspaceId).then((result) => {') > -1)
   assert.equal((clickBlock.match(/stopActivity|interrupt|abort|kill/gi) || []).length, 0, '点击处理器里不得有停止调用')
   // 词条本身：用户看到的是"请先停止"，插件不代劳
-  assert.match(line(46), /'menu\.running': '有会话正在运行，请先停止'/)
+  assert.match(src, /'menu\.running': '有会话正在运行，请先停止'/)
 })
 
 test('9d 运行中拒绝：复算异常消息 → reason 判定（只影响提示，不影响任何会话）', () => {

@@ -42,8 +42,11 @@
     'menu.archive': '归档工作区',
     'menu.archiving': '正在归档…',
     'menu.archiveDone': '已归档',
+    'menu.archiveDoneCleaned': '已归档 · 清理了 {n} 个 Git 工作树',
+    'menu.archiveDoneRetained': '已归档 · {n} 个工作树有改动已保留',
     'menu.archiveFailed': '归档失败，请重试',
     'menu.running': '有会话正在运行，请先停止',
+    'panel.cleanupRemoved': '{n} 个工作树已清理',
     'footer.open': '已归档工作区',
     'footer.aria': '已归档工作区 ({n})',
     'footer.ariaNew': '有新的归档工作区 ({n})',
@@ -64,8 +67,11 @@
     'menu.archive': 'Archive workspace',
     'menu.archiving': 'Archiving…',
     'menu.archiveDone': 'Archived',
+    'menu.archiveDoneCleaned': 'Archived · {n} Git worktrees cleaned',
+    'menu.archiveDoneRetained': 'Archived · {n} worktrees kept',
     'menu.archiveFailed': 'Archive failed, retry',
     'menu.running': 'A session is running — stop it first',
+    'panel.cleanupRemoved': '{n} worktrees cleaned',
     'footer.open': 'Archived workspaces',
     'footer.aria': 'Archived workspaces ({n})',
     'footer.ariaNew': 'New archived workspaces ({n})',
@@ -348,6 +354,33 @@
         })
       }
 
+      /**
+       * 归档后向宿主问一次「这批会话的工作树被清掉没有」。
+       *
+       * 0.2.2-rc.2 起官方归档会清理符合条件的工作树（保留分支与提交），
+       * 是否清理由官方 config retainOnArchive 决定，插件不干预，只如实转述。
+       * 纯只读：失败了就静默回落成普通的「已归档」，绝不阻塞归档结果。
+       */
+      function fetchCleanup(sessionIds) {
+        const ids = (Array.isArray(sessionIds) ? sessionIds : []).filter((s) => typeof s === 'string' && s)
+        if (ids.length === 0) return Promise.resolve(null)
+        // 宿主侧单次上限 50，超出部分不查（本插件的账本仍记全量会话）。
+        const query = ids.slice(0, 50).map(encodeURIComponent).join(',')
+        return fetchJson('/cleanup?sessionIds=' + query)
+          .then(({ ok, body }) => (ok && body && body.ok === true && body.cleanup ? body.cleanup : null))
+          .catch(() => null)
+      }
+
+      /** 把清理结果压成一句人话；没有可说的（未清理 / 不支持）返回 null。 */
+      function cleanupNote(t, summary) {
+        if (!summary || summary.supported !== true) return null
+        const removed = Number(summary.removed) || 0
+        const retained = Number(summary.retained) || 0
+        if (removed > 0) return t('menu.archiveDoneCleaned', { n: removed })
+        if (retained > 0) return t('menu.archiveDoneRetained', { n: retained })
+        return null
+      }
+
       /* ---------------- 官方命令封装 ---------------- */
       let activeCtx = null
       function safeGet(serviceName) {
@@ -450,6 +483,8 @@
             archivedAt: Date.now(),
             sessionIds: [...new Set([...(prev ? prev.sessionIds : []), ...done])],
           }
+          // cleanupRemoved 只是本次浏览器会话里的展示用派生值，不进宿主账本、
+          // 不影响恢复：恢复只认 sessionIds。
           // 先落账本，成功才改内存视图：账本写失败时会话能整体回滚。
           try {
             await persistArchive(workspaceId, record)
@@ -463,7 +498,21 @@
           acked = false
           persistPrefs()
           notify()
-          return { ok: true }
+          // 账本已经落盘、UI 已经更新，这时才去问工作树清理结果。
+          // 问不到就只是个普通「已归档」：清理是官方行为，不归插件保证。
+          const cleanup = await fetchCleanup(record.sessionIds)
+          if (cleanup) {
+            const current = archives.get(workspaceId)
+            // current 可能已经没了：await 期间用户点了「恢复」，那条记录已被
+            // executeUnarchive 删掉。这时什么都不做才是对的，别把记录写回来。
+            if (current) {
+              // 无条件写入（含 0）：归档 → 恢复 → 再归档时，若这一轮没清理任何
+              // 工作树，必须把上一轮的数字清零，否则面板会一直显示旧值。
+              archives.set(workspaceId, { ...current, cleanupRemoved: Number(cleanup.removed) || 0 })
+              notify()
+            }
+          }
+          return { ok: true, cleanup }
         } finally {
           busy.delete(workspaceId); notify()
         }
@@ -577,7 +626,9 @@
           label.textContent = t('menu.archiving')
           executeArchive(workspaceId).then((result) => {
             if (result.ok) {
-              label.textContent = t('menu.archiveDone')
+              // 有工作树被清理 / 被保留时如实说出来；官方没挂 worktree 服务、
+              // 或这次没有任何工作树时，仍是原来的「已归档」。
+              label.textContent = cleanupNote(t, result.cleanup) || t('menu.archiveDone')
               closeShippedMenu(doc, win)
             } else {
               label.textContent = result.reason === 'running' ? t('menu.running') : t('menu.archiveFailed')
@@ -803,12 +854,15 @@
         const shared = props.shared
         const meta = workspaceMeta(rec.workspaceId)
         const isBusy = shared.busy.indexOf(rec.workspaceId) !== -1
+        const removed = Number(rec.cleanupRemoved) || 0
         return h('div', { className: NS + '-row' },
           h('div', { className: NS + '-rowmain' },
             h('div', { className: NS + '-rowname' }, meta.title || t('common.untitled')),
             h('div', { className: NS + '-meta' },
               t('panel.sessionCount', { n: rec.sessionIds.length }),
-              meta.path ? ' · ' + meta.path : '')),
+              meta.path ? ' · ' + meta.path : '',
+              // 只记住「被清理」的数量：保留是常态，写进面板只会变成噪音。
+              removed > 0 ? ' · ' + t('panel.cleanupRemoved', { n: removed }) : '')),
           h('button', {
             type: 'button',
             className: NS + '-btn ' + NS + '-btn-primary',

@@ -2,7 +2,52 @@
 
 ## 0.1.7
 
-### 修复
+### 适配 dsh 0.2.2-rc.2：归档会清理 Git 工作树
+
+dsh 0.2.2-rc.2 起，官方归档会话时**默认清理**符合条件的工作树（干净、无人引用、
+登记在 dsh 工作树池内），保留分支与提交。本插件此前在 README 里承诺
+「归档不会删除任何文件」，而批量归档整个工作区又**更容易**满足「无人引用」这一条，
+所以这次必须把语义说清楚，并让用户看见实际发生了什么。
+
+### 新增
+
+- **宿主半侧只读订阅官方清理结果**：订阅 `worktree/cleanup` 事件 + 新增
+  `GET /cleanup?sessionIds=…`，返回每个会话的 `{ revision, status }` 与
+  removed / retained / scheduled / failed 计数。数据全部来自官方
+  `worktrees.cleanupOf()` 与事件广播，插件**不触发、不干预**任何清理。
+- **浏览器半侧归档后提示**：有工作树被清理时菜单项显示
+  「已归档 · 清理了 N 个 Git 工作树」，只被保留时显示「已归档 · N 个工作树已保留」；
+  「已归档工作区」面板的对应行也会标注清理数量。
+- **文档**：README 补齐工作树清理的判定表、恢复边界（取消归档**不会**重建目录）、
+  以及 `worktree.retainOnArchive` 这个官方开关的写法。
+
+### 修复（自查 + 只读评审发现）
+
+- **探测定时器泄漏**：兜底超时用的 `setTimeout` 在 `cleanupOf` 先返回时没有
+  `clearTimeout`，一次最多 50 个会话会留下最多 50 个悬空定时器。现改为
+  `try/finally` 中无条件清除。
+- **超时兜底原本不生效**：对兜底定时器调 `unref()` 会让它不拖住事件循环，
+  宿主空闲时会在超时触发前就退出，兜底等于没写（实测进程直接以 unsettled
+  top-level await 退出）。已移除 `unref`，改由 `clearTimeout` 保证不泄漏。
+- **旧清理数字串轮**：`cleanupOf` 明确返回 `null`（表示本次 Host 生命周期内没有
+  清理尝试，例如归档后又取消归档）时，代码会静默回落事件缓存，把上一轮的
+  `removed` 当成这一轮的结论，面板显示假的「已清理 N 个」。现区分为
+  「明确 null → 丢弃缓存」「超时/抛错 → 回落缓存」。
+- **面板数字不清零**：重复归档时只在 `removed > 0` 才写入，导致
+  归档 → 恢复 → 再归档（本轮没有清理）后仍显示上一轮的数量。改为无条件写入。
+- **revision 校验口径不一致**：`summarizeCleanup` 少了 `revision >= 0` 判断，
+  与 `remember()` 的单调校验不一致，负 `revision` 会被当有效值。已对齐。
+
+### 兼容性
+
+- `@deepseek-ai/dsh-experimental-worktree` 是**可选**依赖：没挂该服务的 profile 上
+  `/cleanup` 返回 `supported: false`，菜单回到普通的「已归档」，其余功能完全不受影响。
+- 状态文件格式与 `/state` `/archive` `/unarchive` `/prefs` 的请求响应**均无变化**；
+  `/cleanup` 是纯新增端点。
+- `cleanupRemoved` 只在浏览器内存里用于展示，**不写入宿主账本**，不影响恢复。
+- 宿主半侧 JS 改动需重启一次 dsh 宿主；浏览器半侧刷新页面即可生效。
+
+### 修复（Linux 布局，2026-11-10 已推送）
 
 - **Linux 上「归档工作区」图标与 Remote 不在同一行**：Linux profile 装载的
   `dsh-qoder-connect` 会无条件注入
@@ -13,7 +58,7 @@
   若容器内存在 qoder 的 `.qdp-foot` 全宽卡片，则同时允许换行，让卡片独占一行、
   Remote 与图标在下一行同行，不破坏 qoder 布局。
 
-### 兼容性
+### 兼容性（Linux 布局修复）
 
 - 仅浏览器半侧（`client/client.js`）样式改动，宿主半侧无改动，刷新页面即生效。
 - Windows 未安装 `dsh-qoder-connect`，容器本就是 row，该规则为同值覆盖，布局不变。

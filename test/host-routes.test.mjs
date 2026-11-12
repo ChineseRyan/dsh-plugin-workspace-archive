@@ -11,7 +11,8 @@ import { lstat, mkdir, mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const { apply, name } = await import('../lib/index.js')
+const { apply, name, __test } = await import('../lib/index.js')
+const { CLEANUP_PROBE_TIMEOUT_MS } = __test
 
 const TMP_ROOT = await mkdtemp(join(tmpdir(), 'dsh-wsa-route-'))
 const PREFIX = '/dsh-workspace-archive'
@@ -119,9 +120,12 @@ test('5a 路由：apply 以 prefix 注册 /dsh-workspace-archive，卸载时可�
   assert.equal(route.path, PREFIX)
   assert.equal(typeof route.handler, 'function')
   assert.ok(meta.effectLabels.indexOf('workspace-archive: route') > -1, '路由必须挂在 ctx.effect 上')
+  // 0.1.7 起宿主侧还有两处只读 effect（worktree/cleanup 订阅与缓存清理），
+  // 所以这里按 label 定位路由 effect，不再假设它恰好是第 0 个。
+  const routeIndex = meta.effectLabels.indexOf('workspace-archive: route')
+  assert.equal(meta.effects.length, meta.effectLabels.length, '每个 effect 都要有对应 disposer')
   // 卸载：路由 effect 的 disposer 必须把注册摘掉（register 返回的 disposer 被调用）
-  assert.equal(meta.effects.length, 1, '宿主侧只应有一个 effect（路由）')
-  meta.effects[0]()
+  meta.effects[routeIndex]()
   assert.equal(meta.registrations.length, 0, '卸载后路由必须被摘除')
 })
 
@@ -194,6 +198,189 @@ test('5e 未知路径：404 且响应体带 prefix', async () => {
   assert.equal((await call(meta, 'POST', '/state', { workspaceId: 'w' })).status, 404)
 })
 
+/* ================= ⑤' 工作树清理结果只读查询（0.2.2-rc.2 适配） ================= */
+
+/** 带 on/get 的最小 ctx：用于驱动 worktree/cleanup 订阅与 cleanupOf 查询。 */
+function makeCleanupCtx(options = {}) {
+  const { ctx, meta } = makeCtx()
+  const listeners = new Map()
+  const services = new Map(Object.entries(options.services || {}))
+  ctx.on = (event, listener) => {
+    if (!listeners.has(event)) listeners.set(event, new Set())
+    listeners.get(event).add(listener)
+    return () => { listeners.get(event)?.delete(listener) }
+  }
+  ctx.get = (serviceName) => services.get(serviceName)
+  const emit = (event, payload) => { for (const fn of [...(listeners.get(event) || [])]) fn(payload) }
+  const setService = (serviceName, value) => services.set(serviceName, value)
+  return { ctx, meta, emit, setService }
+}
+
+test('5h GET /cleanup：无 worktree 服务时 supported=false，且不报错', async () => {
+  await useFreshHome('cleanup-unsupported')
+  const { ctx, meta } = makeCleanupCtx()
+  apply(ctx)
+  const r = await call(meta, 'GET', '/cleanup?sessionIds=s1,s2')
+  assert.equal(r.status, 200)
+  assert.equal(r.json.ok, true)
+  assert.equal(r.json.cleanup.supported, false, '本机未挂 worktree 服务时应如实降级')
+  assert.deepEqual(r.json.cleanup.sessions, [])
+  assert.equal(r.json.cleanup.removed, 0)
+})
+
+test('5i GET /cleanup：worktree/cleanup 事件按会话聚合，scheduled→removed 覆盖同一 revision', async () => {
+  await useFreshHome('cleanup-events')
+  const { ctx, meta, emit } = makeCleanupCtx()
+  apply(ctx)
+
+  emit('worktree/cleanup', { sessionId: 's1', path: '/secret/path', cleanup: { revision: 7, status: 'scheduled' } })
+  emit('worktree/cleanup', { sessionId: 's1', path: '/secret/path', cleanup: { revision: 7, status: 'removed' } })
+  emit('worktree/cleanup', { sessionId: 's2', path: '/other', cleanup: { revision: 8, status: 'retained' } })
+  // 乱序到达的旧 revision 必须被丢弃
+  emit('worktree/cleanup', { sessionId: 's2', path: '/other', cleanup: { revision: 3, status: 'removed' } })
+  // 形状异常的事件必须被忽略而不是炸掉
+  emit('worktree/cleanup', { sessionId: 's3', cleanup: { revision: 9, status: 'bogus' } })
+  emit('worktree/cleanup', { sessionId: '../evil', cleanup: { revision: 1, status: 'removed' } })
+  emit('worktree/cleanup', null)
+
+  const r = await call(meta, 'GET', '/cleanup?sessionIds=s1,s2,s3')
+  assert.equal(r.status, 200)
+  assert.deepEqual(r.json.cleanup.sessions, [
+    { sessionId: 's1', revision: 7, status: 'removed' },
+    { sessionId: 's2', revision: 8, status: 'retained' },
+  ], '同一会话保留最新 revision；非法 status / 非法 id / null 全部丢弃')
+  assert.equal(r.json.cleanup.removed, 1)
+  assert.equal(r.json.cleanup.retained, 1)
+  assert.equal(r.json.cleanup.supported, false, '本用例没挂服务，仍应报 supported=false')
+  assert.ok(!r.raw.includes('/secret/path'), '/cleanup 绝不能回显任何文件系统路径')
+})
+
+test('5j GET /cleanup：有 worktree 服务时用 cleanupOf 补实时状态，服务抛错则回落事件缓存', async () => {
+  await useFreshHome('cleanup-live')
+  const { ctx, meta, emit, setService } = makeCleanupCtx()
+  const calls = []
+  setService('worktrees', {
+    async cleanupOf(session, revision) {
+      calls.push({ id: session?.id, revision })
+      if (session?.id === 'boom') throw new Error('service exploded')
+      if (session?.id === 's-live') return { revision: 2, status: 'removed' }
+      return null
+    },
+  })
+  setService('sessions', { get: (id) => (id === 's-live' ? { id, kind: 'live-session' } : undefined) })
+  apply(ctx)
+
+  emit('worktree/cleanup', { sessionId: 'boom', cleanup: { revision: 5, status: 'retained' } })
+
+  const r = await call(meta, 'GET', '/cleanup?sessionIds=s-live,boom,s-none')
+  assert.equal(r.status, 200)
+  assert.equal(r.json.cleanup.supported, true)
+  assert.deepEqual(r.json.cleanup.sessions, [
+    { sessionId: 's-live', revision: 2, status: 'removed' },
+    { sessionId: 'boom', revision: 5, status: 'retained' },
+  ])
+  // 活会话传对象本身，冷会话至少要能拿到 id
+  assert.deepEqual(calls.map((c) => c.id).sort(), ['boom', 's-live', 's-none'])
+  assert.deepEqual(calls.map((c) => c.revision), [null, null, null], '只读探测必须用 revision=null，绝不触发清理')
+})
+
+test('5n GET /cleanup：cleanupOf 返回越界状态/非法 revision 时回落事件缓存', async () => {
+  await useFreshHome('cleanup-invalid-state')
+  const { ctx, meta, emit, setService } = makeCleanupCtx()
+  setService('worktrees', {
+    async cleanupOf(session) {
+      if (session?.id === 's-bad-status') return { revision: 1, status: 'CHMOD777' }
+      if (session?.id === 's-bad-rev') return { revision: 1.5, status: 'removed' }
+      if (session?.id === 's-neg-rev') return { revision: -2, status: 'removed' }
+      return { revision: 9, status: 'retained' }
+    },
+  })
+  apply(ctx)
+  emit('worktree/cleanup', { sessionId: 's-bad-status', cleanup: { revision: 4, status: 'removed' } })
+
+  const r = await call(meta, 'GET', '/cleanup?sessionIds=s-bad-status,s-bad-rev,s-neg-rev,s-ok')
+  assert.equal(r.status, 200)
+  // 越界/非法的 cleanupOf 结果必须被丢弃，绝不按脏数据写进汇总
+  assert.deepEqual(r.json.cleanup.sessions, [
+    { sessionId: 's-bad-status', revision: 4, status: 'removed' },
+    { sessionId: 's-ok', revision: 9, status: 'retained' },
+  ])
+  assert.equal(r.json.cleanup.removed, 1)
+  assert.equal(r.json.cleanup.retained, 1)
+})
+
+test('5o GET /cleanup：cleanupOf 迟迟不返回时超时回落缓存，且不留下悬挂定时器', async () => {
+  await useFreshHome('cleanup-timeout')
+  const { ctx, meta, emit, setService } = makeCleanupCtx()
+  // 永不 resolve：模拟官方服务卡住（比如冷会话热起来很慢）。
+  setService('worktrees', { cleanupOf: () => new Promise(() => {}) })
+  apply(ctx)
+  emit('worktree/cleanup', { sessionId: 's-stuck', cleanup: { revision: 3, status: 'scheduled' } })
+
+  const started = Date.now()
+  const r = await withTimeout(
+    call(meta, 'GET', '/cleanup?sessionIds=s-stuck'),
+    CLEANUP_PROBE_TIMEOUT_MS + 3000,
+    '/cleanup 必须在探测超时后仍返回，不能把请求挂死',
+  )
+  const elapsed = Date.now() - started
+  assert.equal(r.status, 200)
+  assert.deepEqual(r.json.cleanup.sessions, [{ sessionId: 's-stuck', revision: 3, status: 'scheduled' }],
+    '超时后必须回落到事件缓存，而不是丢掉这条')
+  assert.ok(elapsed < CLEANUP_PROBE_TIMEOUT_MS + 2000, '必须在探测上限附近返回，实际 ' + elapsed + 'ms')
+})
+
+test('5q GET /cleanup：cleanupOf 明确返回 null 时丢弃旧缓存，不把上一轮数字当成结论', async () => {
+  await useFreshHome('cleanup-stale-cache')
+  const { ctx, meta, emit, setService } = makeCleanupCtx()
+  // 模拟「归档 → 取消归档」之后：官方把 attempt 删了，cleanupOf 返回 null。
+  setService('worktrees', { cleanupOf: async () => null })
+  apply(ctx)
+  // 上一轮确实清理过 1 个，事件缓存里还留着。
+  emit('worktree/cleanup', { sessionId: 's-cycle', cleanup: { revision: 5, status: 'removed' } })
+
+  const r = await call(meta, 'GET', '/cleanup?sessionIds=s-cycle')
+  assert.equal(r.status, 200)
+  assert.deepEqual(r.json.cleanup.sessions, [], '官方说没有清理尝试时，缓存必须作废')
+  assert.equal(r.json.cleanup.removed, 0, '绝不能让上一轮的 removed 数字漏到这一轮')
+})
+
+test('5p GET /cleanup：sessions 服务缺失时仍能按 id 探测（冷会话降级）', async () => {
+  await useFreshHome('cleanup-no-sessions')
+  const { ctx, meta, setService } = makeCleanupCtx()
+  const seen = []
+  setService('worktrees', {
+    async cleanupOf(session) {
+      seen.push(session?.id)
+      return session?.id === 's-cold' ? { revision: 6, status: 'removed' } : null
+    },
+  })
+  // 故意不挂 sessions 服务
+  apply(ctx)
+  const r = await call(meta, 'GET', '/cleanup?sessionIds=s-cold')
+  assert.equal(r.status, 200)
+  assert.deepEqual(seen, ['s-cold'], '拿不到活会话时必须仍以 {id} 形式探测')
+  assert.deepEqual(r.json.cleanup.sessions, [{ sessionId: 's-cold', revision: 6, status: 'removed' }])
+})
+
+test('5k GET /cleanup：入参校验（数量上限 / 非法 id / 空列表）', async () => {
+  await useFreshHome('cleanup-validation')
+  const { ctx, meta } = makeCleanupCtx()
+  apply(ctx)
+
+  const empty = await call(meta, 'GET', '/cleanup')
+  assert.equal(empty.status, 200)
+  assert.deepEqual(empty.json.cleanup.sessions, [])
+
+  const tooMany = await call(meta, 'GET', '/cleanup?sessionIds=' + Array.from({ length: 51 }, (_, i) => 's' + i).join(','))
+  assert.equal(tooMany.status, 400, '超过上限必须拒绝，别让只读查询面变成放大器')
+  assert.equal(tooMany.json.ok, false)
+
+  const bad = await call(meta, 'GET', '/cleanup?sessionIds=../evil')
+  assert.equal(bad.status, 400)
+  assert.equal(bad.json.ok, false)
+})
+
 test('5f GET /ping：返回 {ok:true, plugin, pong:true}（隔离实例自检用）', async () => {
   await useFreshHome('route-ping')
   const { ctx, meta } = makeCtx()
@@ -246,7 +433,7 @@ test('5g 入参校验：非法 workspaceId 400 / 非法 sessionIds 500 / 非对�
   assert.equal(tooBig.req.destroyed, true, '超限时必须 req.destroy()')
 })
 
-test('5h 坏 URL：直接 400，不抛到外层', async () => {
+test('5l 坏 URL：直接 400，不抛到外层', async () => {
   await useFreshHome('route-badurl')
   const { ctx, meta } = makeCtx()
   apply(ctx)
@@ -259,7 +446,7 @@ test('5h 坏 URL：直接 400，不抛到外层', async () => {
   assert.deepEqual(JSON.parse(res.bodyText), { ok: false, error: 'bad url' })
 })
 
-test('5i GET /state：状态文件损坏 → 500 {ok:false}（不吞错、不回落空账本）', async () => {
+test('5m GET /state：状态文件损坏 → 500 {ok:false}（不吞错、不回落空账本）', async () => {
   const home = await useFreshHome('route-corrupt')
   await mkdir(join(home, 'storages'), { recursive: true })
   const target = join(home, 'storages', 'dsh-workspace-archive.json')

@@ -55,13 +55,42 @@ dsh plugin --profile <profile> remove dsh-plugin-workspace-archive
 2. 全部成功后，把「工作区 → 会话 ID 名单」写入宿主状态文件；
 3. 该工作区的会话全部归档后，工作区行随之从侧边栏消失——与它下面的会话
    保持一致的可见性。插件只在 DOM 上给这样的行加隐藏标记，
-   **不读写、不改写**官方任何视图数据。
+   **不读写、不改写**官方任何视图数据；
+4. 归档完成后再向宿主问一次「这些会话的 Git 工作树被清掉没有」，
+   有结果就把菜单项改成「已归档 · 清理了 N 个 Git 工作树」。
+
+会话与历史记录**永远不会**被本插件删除。正在运行的会话无法归档，
+菜单会提示「有会话正在运行，请先停止」。
+
+### ⚠️ Git 工作树：dsh 0.2.2-rc.2 起的新行为
+
+dsh **0.2.2-rc.2** 起，官方归档会话时会**默认清理**符合条件的工作树：
+
+| 会被清理 | 会保留 |
+| --- | --- |
+| 是本次会话创建、且登记在 dsh 工作树池里的工作树 | 有未提交改动或未跟踪文件 |
+| `git status` 干净 | 还有未归档的会话在用（含子代理祖先） |
+| 分支与 `HEAD` 对得上 | 会话处于 `read-only` 沙箱档 |
+| 位于配置的工作树池内、源仓库仍是该仓库顶层 | 含子模块、被 lock / prunable / detached |
+
+**分支和提交永远保留**，被移除的只是工作目录和它的 worktree 登记。
+但**恢复归档不会自动重建目录**——取消归档只还原会话与账本，
+重建工作树要用 Forge 面板的「恢复工作树」，或手动 `git worktree add`。
+
+想反过来「归档时一律保留工作树」，在 profile 的 `cordis.patch.yml` 里改官方配置：
+
+```yaml
+- id: worktree
+  name: "@deepseek-ai/dsh-experimental-worktree"
+  config:
+    retainOnArchive: true      # 默认 false
+```
+
+> 本插件**不干预**清理决策，只如实转述结果：官方没有按次开关，
+> 插件也不会替你重建工作树。上面的开关是官方配置，属于 profile 层。
 
 **恢复时发生了什么？** 按账本里的会话名单逐个还原，全部成功才删除记录。
 恢复最后一条记录后，「已归档工作区」面板会自动关闭。
-
-> 归档**不会**删除任何文件、会话或历史记录。正在运行的会话无法归档，
-> 菜单会提示「有会话正在运行，请先停止」。
 
 ## 数据与隐私
 
@@ -76,8 +105,11 @@ dsh plugin --profile <profile> remove dsh-plugin-workspace-archive
 
 | 项 | 要求 |
 | --- | --- |
-| dsh | `0.2.1-rc.2` 及以上 |
+| dsh | `0.2.1-rc.2` 及以上（工作树清理提示需 `0.2.2-rc.2` 及以上） |
 | 依赖 | 无运行时第三方依赖 |
+
+`/cleanup` 查询面在没挂 `@deepseek-ai/dsh-experimental-worktree` 的 profile 上
+会自动降级（`supported: false`），菜单回到普通的「已归档」，其余功能不受影响。
 
 ## 常见问题
 
@@ -86,6 +118,11 @@ dsh plugin --profile <profile> remove dsh-plugin-workspace-archive
 
 **Q：归档后还能搜到这些会话吗？**
 它们处于官方归档状态，行为与官方「归档会话」完全一致。
+
+**Q：归档会清掉我的 Git 工作树吗？**
+看 dsh 版本和 profile 配置。0.2.2-rc.2 起官方默认清理「干净且无人引用」的工作树，
+分支与提交始终保留；把 `worktree.retainOnArchive` 设为 `true` 可一律保留。
+本插件只提示结果，不改变这个行为。
 
 **Q：和别的插件冲突吗？**
 本插件不包装、不改写任何官方服务，只读取工作区快照，只在工作区行上添加一个
@@ -105,8 +142,8 @@ dsh plugin --profile <profile> remove dsh-plugin-workspace-archive
 ```
 package.json           dsh.bundle / dsh.client / exports / locale / icon
 cordis.patch.yml       bundle 层（含幂等守卫，重复挂载不会注册两次路由）
-lib/index.js           宿主半侧：状态文件 + /dsh-workspace-archive/{ping,state,archive,unarchive,prefs}
-client/client.js       浏览器半侧：「…」菜单注入 + 已归档面板
+lib/index.js           宿主半侧：状态文件 + /dsh-workspace-archive/{ping,state,archive,unarchive,prefs,cleanup}
+client/client.js       浏览器半侧：「…」菜单注入 + 已归档面板 + 工作树清理提示
 locale/{zh,en}.json    插件元数据文案
 icon.svg               图标
 ```
