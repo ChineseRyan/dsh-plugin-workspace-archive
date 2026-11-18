@@ -5,12 +5,17 @@
  * window.__ModuleLoader__.load({ id, factory }) 注册自己；id 必须与 package.json
  * 的 name 一致。
  *
- * 实现要点（全部有本机 0.2.1-rc.2 源码 / 实测依据）：
+ * 实现要点（全部有本机 0.2.2-rc.3 源码 / 实测依据）：
  *
- *  1. 工作区行的「…」菜单是官方硬编码的两项（rename / delete），没有可注入槽位
- *     （@deepseek-ai/dsh-client-ui-workspace lib/client.js 的 ProjectRowItem）。
- *     因此用「点击捕获臂 + MutationObserver」在菜单 portal 出现后追加一项，
- *     克隆官方菜单项的 class，视觉与交互一致。
+ *  1. 工作区行的「…」菜单（0.1.8 起）：
+ *     dsh 0.2.2-rc.2 起官方把菜单换成了「贡献式」实现
+ *     （@deepseek-ai/dsh-client-ui-context-menu 的 ctx.contextMenus.register，
+ *     行触发器见 dsh-client-ui-workspace 的 ProjectRow：renderFactorySlot
+ *     ('contextMenu.button', { target: { kind: 'workspace', value } })），
+ *     于是这里直接注册一条 workspace target 的菜单项，由官方负责渲染、定位、
+ *     键盘与生命周期。
+ *     更早的 dsh（没有 contextMenus 服务）仍退回老办法：点击捕获臂 +
+ *     MutationObserver 在菜单 portal 里追加一项，克隆官方 class。
  *     行选择器只用 [data-row-key^="workspace:"] —— 会话行是 session:<id>，
  *     永不命中，所以绝不会给会话行的「…」菜单加东西。
  *
@@ -554,6 +559,66 @@
         }
       }
 
+      /* ---------------- 官方菜单贡献（dsh 0.2.2-rc.2+） ---------------- */
+      /**
+       * 契约来自 @deepseek-ai/dsh-client-ui-context-menu 0.2.2-rc.3：
+       *   ctx.contextMenus.register({ id, target, order, observe, resolve })
+       *     observe(targetValue)  -> 可订阅源数组（本项目用自带的 snapshot/subscribe）
+       *     resolve(targetValue, signal) -> action[]
+       *   action = { id, label, disabled?, danger?, icon?, failureLabel?,
+       *              commandId?, separatorBefore?, children?, run }
+       *   run 抛错/拒绝时菜单显示 failureLabel；结果反馈用
+       *   ctx.contextMenus.notify(text, ok, undoAction?)，菜单已在 run 之前关闭。
+       */
+      function archiveMenuAction(workspaceId, menus, t) {
+        return {
+          id: 'archive',
+          label: t('menu.archive'),
+          // 官方 contextMenu.icon 目录里已有 workspace.archive（IconArchiveOutlineRegular），
+          // 直接用这个 key，不重复注册图标；旧版 dsh 缺该 key 时只是不显示图标。
+          icon: { key: 'workspace.archive' },
+          disabled: busy.has(workspaceId),
+          failureLabel: t('menu.archiveFailed'),
+          run: () => runArchiveFromMenu(workspaceId, menus, t),
+        }
+      }
+      /** 菜单项点击：执行归档并用官方 toast 报告结果（含工作树清理情况）。 */
+      async function runArchiveFromMenu(workspaceId, menus, t) {
+        if (busy.has(workspaceId)) return undefined
+        const tell = (text, ok) => {
+          try { if (menus && typeof menus.notify === 'function') menus.notify(text, ok) } catch (_) { /* 无 toast 时静默 */ }
+        }
+        const result = await executeArchive(workspaceId)
+        if (result.ok) tell(cleanupNote(t, result.cleanup) || t('menu.archiveDone'), true)
+        else tell(result.reason === 'running' ? t('menu.running') : t('menu.archiveFailed'), false)
+        return result
+      }
+      /** menuId 固定，重复 apply（热重挂）时由 ctx.effect 负责注销，不会撞 id。 */
+      function installContextMenu(scope, t, bridge) {
+        // ctx.inject 的 fork 直接暴露服务；保险起见再走一次 get()。
+        let menus = scope && scope.contextMenus
+        if (!menus && scope && typeof scope.get === 'function') {
+          try { menus = scope.get('contextMenus') } catch (_) { menus = null }
+        }
+        if (!menus || typeof menus.register !== 'function') return () => {}
+        const dispose = menus.register({
+          id: ID + '.workspace',
+          target: 'workspace',
+          // 排在官方 rename/delete 之后；open-in-app 用的是 200。
+          order: 150,
+          observe: () => [{ getSnapshot: snapshot, subscribe: (fn) => subscribe(fn) }],
+          resolve: (target) => {
+            const workspaceId = target && typeof target.workspaceId === 'string' ? target.workspaceId : ''
+            // 已归档的工作区行不该再提供「归档」；官方隐藏失败时也不重复给入口。
+            if (!workspaceId || archives.has(workspaceId)) return []
+            return [archiveMenuAction(workspaceId, menus, t)]
+          },
+        })
+        // 官方接口接管后，DOM 桥必须立刻停手，否则同一菜单会出现两条。
+        if (bridge) bridge.legacy = false
+        return dispose
+      }
+
       /* ---------------- workspaces.list 只读快照（不做投影） ---------------- */
       // 只保留一个对 model 的引用用于取原始快照；绝不改写 getSnapshot/subscribe。
       let model = null
@@ -644,7 +709,12 @@
       let win = typeof window === 'undefined' ? null : window
       /** 由 installDomBridge 安装：DOM 桥内创建的延时器统一登记，卸载时清理。 */
       let timerSink = null
-      function installDomBridge(doc, t) {
+      /**
+       * bridge.legacy 由 installContextMenu 置 false：官方 ctx.contextMenus 接管后
+       * 本桥只负责行可见性同步与 Esc，并顺手摘掉自己早先塞进去的节点。
+       */
+      function installDomBridge(doc, t, bridge) {
+        const legacy = () => !(bridge && bridge.legacy === false)
         if (!doc || typeof doc.addEventListener !== 'function' || !doc.body) return () => {}
         let armed = null
         let disposed = false
@@ -673,7 +743,7 @@
         }
         function onCapture(event) {
           if (disposed) return
-          arm(event && event.target)
+          if (legacy()) arm(event && event.target)
           // 点击本身就是「即将开菜单」的明确信号；主动排一次扫描，
           // 不单纯依赖 MutationObserver（菜单若复用同一 portal 节点则无 DOM 变更）。
           schedule()
@@ -775,6 +845,14 @@
         function scan() {
           if (armed && Date.now() > armed.until) armed = null
           syncRowVisibility()
+          // 0.2.2+：菜单项由官方渲染，这里不再往菜单里塞节点。
+          if (!legacy()) {
+            try {
+              const stale = doc.querySelectorAll('[' + MENU_FLAG + ']')
+              for (const node of stale) { if (node && typeof node.remove === 'function') node.remove() }
+            } catch (_) {}
+            return
+          }
           const menus = Array.from(doc.querySelectorAll(MENU_SELECTOR))
           for (const menu of menus) {
             if (menu.querySelector('[' + MENU_FLAG + ']') !== null) continue
@@ -930,7 +1008,18 @@
         prefsCached = loadPrefs()
         ctx.effect(() => installStyles(doc), ID + ': styles')
         ctx.effect(() => installProjection(ctx), ID + ': projection')
-        ctx.effect(() => installDomBridge(doc, t), ID + ': menus')
+        // 「…」菜单：默认先由 DOM 桥接住（旧 dsh），一旦 ctx.contextMenus 可用，
+        // 官方注册成功就把桥关掉——两条路径互斥，不会出现两条「归档工作区」。
+        const menuBridge = { legacy: true }
+        ctx.effect(() => installDomBridge(doc, t, menuBridge), ID + ': menus')
+        if (typeof ctx.inject === 'function') {
+          // 服务晚到也能补注册；老 dsh 没有该服务时回调永不执行，桥继续工作。
+          ctx.inject(['contextMenus'], (scope) => {
+            scope.effect(() => installContextMenu(scope, t, menuBridge), ID + ': workspace menu')
+          })
+        } else {
+          ctx.effect(() => installContextMenu(ctx, t, menuBridge), ID + ': workspace menu')
+        }
         ctx.effect(() => { loadFromHost(); return () => {} }, ID + ': bootstrap')
 
         // slots.inject 的返回是 disposer：用 ctx.effect 包住，卸载/热重挂时

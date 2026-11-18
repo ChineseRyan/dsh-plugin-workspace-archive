@@ -1,5 +1,39 @@
 # 变更记录
 
+## 0.1.8
+
+### 适配 dsh 0.2.2-rc.2：菜单改用官方 ctx.contextMenus 贡献接口
+
+dsh 0.2.2-rc.2 起，官方把工作区行「…」菜单从硬编码的两项换成了**贡献式**实现
+（`@deepseek-ai/dsh-client-ui-context-menu`）：行触发器由 `renderFactorySlot`
+(`contextMenu.button`, { target: { kind: 'workspace', value } }) 渲染，菜单内容由
+各插件 `ctx.contextMenus.register` 贡献，官方负责定位、键盘、焦点与生命周期。
+
+0.1.7 及更早用的是「点击捕获臂 + MutationObserver，把节点塞进
+「恰好 2 个 `[role=menuitem]`」的旧菜单」这一 DOM 桥。新菜单不再是那种结构，
+判定永不命中，于是**静默**失效：插件在、宿主接口在，就是没有菜单项。
+
+### 变更
+
+- **菜单项走官方接口**：`ctx.contextMenus.register({ id, target: 'workspace',
+  order: 150, observe, resolve })`，`resolve` 返回一条「归档工作区」；已归档的
+  工作区返回空数组，归档中（`busy`）时 `disabled: true`。
+- **图标**：复用官方 `contextMenu.icon` 目录里的 `workspace.archive`
+  （IconArchiveOutlineRegular），不再自绘；旧版 dsh 缺该 key 时只是没有图标。
+- **结果反馈改用官方 toast**：`ctx.contextMenus.notify(text, ok)` 显示
+  「已归档 / 已归档 · 清理了 N 个 Git 工作树 / 有会话正在运行，请先停止」，
+  不再靠原地改菜单项文案。
+- **向后兼容**：没有 `contextMenus` 的旧 dsh 自动退回 0.1.7 的 DOM 桥
+  （`installDomBridge(doc, t, legacyMenus)` 只在与官方接口互斥时注入），
+  两条路径不会同时出现两个「归档工作区」。
+- **测试**：新增 `test/context-menu.test.mjs`，真的把 client bundle 加载起来，
+  用假 ctx 断言注册形状、`resolve` 行为、`notify` 反馈与旧版降级。
+
+### 未变
+
+`sidebar.footer.action` 按钮 + `shell.overlay` 面板、归档回滚语义、
+工作树清理提示、账本与恢复流程全部照旧。
+
 ## 0.1.7
 
 ### 适配 dsh 0.2.2-rc.2：归档会清理 Git 工作树

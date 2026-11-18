@@ -57,7 +57,7 @@ dsh plugin --profile <profile> remove dsh-plugin-workspace-archive
    保持一致的可见性。插件只在 DOM 上给这样的行加隐藏标记，
    **不读写、不改写**官方任何视图数据；
 4. 归档完成后再向宿主问一次「这些会话的 Git 工作树被清掉没有」，
-   有结果就把菜单项改成「已归档 · 清理了 N 个 Git 工作树」。
+   有结果就用官方 toast 提示「已归档 · 清理了 N 个 Git 工作树」。
 
 会话与历史记录**永远不会**被本插件删除。正在运行的会话无法归档，
 菜单会提示「有会话正在运行，请先停止」。
@@ -143,13 +143,28 @@ dsh **0.2.2-rc.2** 起，官方归档会话时会**默认清理**符合条件的
 package.json           dsh.bundle / dsh.client / exports / locale / icon
 cordis.patch.yml       bundle 层（含幂等守卫，重复挂载不会注册两次路由）
 lib/index.js           宿主半侧：状态文件 + /dsh-workspace-archive/{ping,state,archive,unarchive,prefs,cleanup}
-client/client.js       浏览器半侧：「…」菜单注入 + 已归档面板 + 工作树清理提示
+client/client.js       浏览器半侧：contextMenus 菜单项 + 已归档面板 + 工作树清理提示
 locale/{zh,en}.json    插件元数据文案
 icon.svg               图标
 ```
 
 宿主半侧用 Cordis 服务（`inject = ['webServer']`），浏览器半侧通过 `dsh.client`
 声明注入点，所有注册挂在 `ctx.effect` 上，可完整卸载。
+
+工作区行「…」菜单项走官方贡献接口（dsh 0.2.2-rc.2+）：
+
+```js
+ctx.inject(['contextMenus'], (scope) => scope.effect(() => scope.contextMenus.register({
+  id: ID + '.workspace',
+  target: 'workspace',      // resolve 收到 { workspaceId, path, displayTitle }
+  order: 150,
+  observe: () => [store],   // 账本/忙碌状态变化后重新 resolve
+  resolve: (target) => [ /* { id, label, disabled?, failureLabel?, run } */ ],
+}), ID + ': workspace menu'))
+```
+
+没有 `contextMenus` 的旧 dsh 自动退回 0.1.7 的 DOM 桥（点击捕获臂 + 菜单项克隆），
+两条路径互斥，不会重复注入。
 
 
 ## 许可
